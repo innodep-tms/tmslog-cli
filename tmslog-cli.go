@@ -231,6 +231,15 @@ func main() {
 				return nil
 			},
 		},
+		{
+			Name:    "path",
+			Aliases: []string{"p"},
+			Usage:   "return tog.config file path",
+			Action: func(c *cli.Context) error {
+				fmt.Println(envFilePath)
+				return nil
+			},
+		},
 	}
 
 	app.Name = "tog"
