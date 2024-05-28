@@ -233,7 +233,7 @@ func main() {
 		},
 	}
 
-	app.Name = "toog"
+	app.Name = "tog"
 	app.Usage = "TMS Log CLI"
 
 	err := app.Run(os.Args)
