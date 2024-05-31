@@ -3,6 +3,7 @@ package tog
 import (
 	"bufio"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -97,14 +98,18 @@ func InitEnvFile() (*os.File, string, TogEnvironmentFile) {
 		Ago:           0,
 	}
 
+	var err error
 	envFilePath := "./tog.config"
 	envFile, openErr := os.Open(envFilePath)
 	if openErr != nil {
-		envFilePath, err := os.UserConfigDir()
+		envFilePath, err = os.UserConfigDir()
 		if err == nil {
-			envFilePath += "/tog.config"
+			if runtime.GOOS == "windows" {
+				envFilePath += "\\tog.config"
+			} else if runtime.GOOS == "linux" {
+				envFilePath += "/tog.config"
+			}
 			envFile, openErr = os.Open(envFilePath)
-
 			if openErr == nil && envFile != nil {
 				envOption = ReadEnvFile(envFile)
 			} else {
@@ -113,7 +118,8 @@ func InitEnvFile() (*os.File, string, TogEnvironmentFile) {
 					WriteEnvFile(envFile, envOption)
 				} else {
 					envFilePath, err = os.UserConfigDir()
-					envFile, openErr = os.Create(envFilePath + "/tog.config")
+					envFilePath += "/tog.config"
+					envFile, openErr = os.Create(envFilePath)
 					if openErr == nil && err == nil && envFile != nil {
 						WriteEnvFile(envFile, envOption)
 					} else {
