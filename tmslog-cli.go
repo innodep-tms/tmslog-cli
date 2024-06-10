@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"tog/tog"
+	"tog/togcmd"
 
 	"github.com/urfave/cli"
 )
@@ -11,9 +11,9 @@ import (
 func main() {
 	App := cli.NewApp()
 
-	pathCom := tog.GetPathCommand()
-	readCom := tog.GetReadCommand(tog.ReadLog)
-	readCountCom := tog.GetReadCountCommand(tog.ReadCountLog)
+	pathCom := togcmd.GetPathCommand()
+	readCom := togcmd.GetReadCommand(togcmd.ReadLog)
+	readCountCom := togcmd.GetReadCountCommand(togcmd.ReadCountLog)
 
 	App.Commands = []cli.Command{
 		readCountCom,

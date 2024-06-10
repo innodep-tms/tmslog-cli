@@ -1,4 +1,4 @@
-package tog
+package togcmd
 
 import (
 	"net/url"
