@@ -47,11 +47,17 @@ func ReadCountLog(c *cli.Context) error {
 
 	envFile, _, envOption := InitEnvFile()
 
+	togOption := ParseArgs(c)
+	if togOption.IsSet("help") {
+		cli.ShowCommandHelp(c, "r")
+		return nil
+	}
+
 	hostStr := ""
-	if c.IsSet("host") {
-		hostStr = "http://" + c.String("host") + "/ntms-log-service/api/v1/log/amount"
-		if c.String("host") != "" && envOption.Host == "" {
-			WriteHostToEnvFile(envFile, c.String("host"))
+	if togOption.IsSet("host") {
+		hostStr = "http://" + *togOption.Host + "/ntms-log-service/api/v1/log/amount"
+		if *togOption.Host != "" && envOption.Host == "" && envFile != nil {
+			WriteHostToEnvFile(envFile, *togOption.Host)
 		}
 	} else {
 		hostStr = "http://" + envOption.Host + "/ntms-log-service/api/v1/log/amount"
