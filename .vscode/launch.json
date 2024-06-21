@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${fileDirname}",
-            "args": ["rc", "tms-dummy-service", "--host=localhost:8080"]
+            "args": ["r", "tms-dummy-service", "--host=localhost:8080"]
         },
     ]
 }

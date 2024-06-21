@@ -1,17 +1,25 @@
 package togcmd
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
+	lgrpc "tog/togcmd/grpc"
 
 	"github.com/go-resty/resty/v2"
 	"github.com/gorilla/websocket"
 	"github.com/urfave/cli"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 func GetReadFlags() []cli.Flag {
@@ -104,6 +112,331 @@ func GetReadCommand(action interface{}) cli.Command {
 		Action:          action,
 	}
 	return readCommand
+}
+
+func GrpcReadLog(c *cli.Context) error {
+	if c == nil {
+		return errors.New("context is nil")
+	}
+	envFile, _, envOption := InitEnvFile()
+
+	togOption := ParseArgs(c)
+	if togOption.IsSet("help") {
+		cli.ShowCommandHelp(c, "r")
+		return nil
+	}
+
+	hostStr := ""
+	if togOption.IsSet("host") {
+		hostStr = *togOption.Host
+		if *togOption.Host != "" && envOption.Host == "" && envFile != nil {
+			WriteHostToEnvFile(envFile, *togOption.Host)
+		}
+	} else {
+		hostStr = envOption.Host
+	}
+	envFile.Close()
+
+	conn, err := grpc.NewClient(hostStr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		return err
+	}
+	client := lgrpc.NewLogClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	requestData := &lgrpc.LogDataSearchCondition{}
+	if togOption.IsSet("from") {
+		requestData.FromStr = *togOption.From
+	} else {
+		requestData.FromStr = time.Now().Format("2006-01-02")
+	}
+
+	if togOption.IsSet("to") {
+		requestData.ToStr = *togOption.To
+	}
+
+	if togOption.IsSet("log-levels") {
+		requestData.LogLevel = strings.Split(*togOption.LogLevels, ",")
+	} else if envOption.LogLevel != "" {
+		requestData.LogLevel = strings.Split(envOption.LogLevel, ",")
+	}
+
+	if togOption.IsSet("service-id") {
+		requestData.ServiceId = *togOption.ServiceID
+	}
+
+	if togOption.IsSet("service-name") {
+		requestData.ServiceName = *togOption.ServiceName
+	}
+
+	if togOption.IsSet("message") {
+		requestData.Message = *togOption.Message
+	}
+
+	if togOption.IsSet("columns") {
+		requestData.Columns = *togOption.Columns
+	} else if envOption.Columns != "" {
+		requestData.Columns = envOption.Columns
+	}
+
+	if togOption.IsSet("format") {
+		requestData.Format = *togOption.Format
+	} else if envOption.Format != "" {
+		requestData.Format = envOption.Format
+	}
+
+	if togOption.IsSet("ignore-newline") {
+		requestData.IgnoreNewline = *togOption.IgnoreNewline
+	} else if envOption.IgnoreNewline {
+		requestData.IgnoreNewline = envOption.IgnoreNewline
+	}
+
+	if togOption.IsSet("time-format") {
+		requestData.TimeFormat = *togOption.TimeFormat
+	} else if envOption.TimeFormat != "" {
+		requestData.TimeFormat = envOption.TimeFormat
+	}
+
+	if togOption.IsSet("tail") {
+		requestData.Tail = *togOption.Tail
+	} else {
+		requestData.Tail = "30"
+	}
+
+	if togOption.IsSet("time-zone") {
+		requestData.TimeLocale = *togOption.TimeZone
+	} else if envOption.TimeZone != "" {
+		requestData.TimeLocale = envOption.TimeZone
+	}
+
+	r, err := client.ReadLog(ctx, requestData)
+	if err != nil {
+		return err
+	}
+	var locale *time.Location
+	if requestData.TimeLocale != "" {
+		locale, err = time.LoadLocation(requestData.TimeLocale)
+	}
+
+	columns := strings.Split(requestData.Columns, ",")
+	tf := ParseTimeFormat(requestData)
+	for {
+		m, err := r.Recv()
+		if err == io.EOF {
+			if requestData.Tail == "" {
+				r.CloseSend()
+				break
+			}
+		} else if err != nil {
+			return err
+		} else {
+			responseData := ""
+			if togOption.IsSet("content-type") && *togOption.ContentType == "json" {
+				responseData, err = JsonWithColumns(columns, locale, m)
+			} else {
+				if len(columns) > 0 {
+					params := GetPrintArgs(columns, requestData.IgnoreNewline, tf, locale, m)
+					responseData = fmt.Sprintf(
+						requestData.Format,
+						params...)
+				} else {
+					responseData = GetLogStr(requestData.IgnoreNewline, tf, locale, m)
+				}
+			}
+			fmt.Printf(responseData + "\n")
+		}
+	}
+
+	return nil
+}
+
+func JsonWithColumns(columns []string, location *time.Location, l *lgrpc.LogData) (string, error) {
+	var b []byte
+	var err error
+	var key, value []byte
+
+	buf := bytes.NewBuffer(b)
+	buf.WriteRune('{')
+
+	for i, c := range columns {
+		switch c {
+		case "T":
+			if key, err = json.Marshal("reg_date"); err != nil {
+				return "", err
+			}
+			if location == nil {
+				if value, err = json.Marshal(l.RegDate); err != nil {
+					return "", err
+				}
+			} else {
+				to, err := time.Parse("2006-01-02T15:04:05.000Z", l.RegDate)
+				if err != nil {
+					return "", err
+				} else {
+					if value, err = json.Marshal(to.In(location)); err != nil {
+						return "", err
+					}
+				}
+			}
+		case "N":
+			if key, err = json.Marshal("service_name"); err != nil {
+				return "", err
+			}
+			if value, err = json.Marshal(l.ServiceName); err != nil {
+				return "", err
+			}
+		case "I":
+			if key, err = json.Marshal("service_id"); err != nil {
+				return "", err
+			}
+			if value, err = json.Marshal(l.ServiceId); err != nil {
+				return "", err
+			}
+		case "V":
+			if key, err = json.Marshal("service_version"); err != nil {
+				return "", err
+			}
+			if value, err = json.Marshal(l.ServiceVersion); err != nil {
+				return "", err
+			}
+		case "L":
+			if key, err = json.Marshal("log_level"); err != nil {
+				return "", err
+			}
+			if value, err = json.Marshal(l.LogLevel); err != nil {
+				return "", err
+			}
+		case "M":
+			if key, err = json.Marshal("message"); err != nil {
+				return "", err
+			}
+			if value, err = json.Marshal(l.Message); err != nil {
+				return "", err
+			}
+		case "C":
+			if key, err = json.Marshal("caller"); err != nil {
+				return "", err
+			}
+			if value, err = json.Marshal(l.Caller); err != nil {
+				return "", err
+			}
+		case "S":
+			if key, err = json.Marshal("stack_trace"); err != nil {
+				return "", err
+			}
+			if value, err = json.Marshal(l.StackTrace); err != nil {
+				return "", err
+			}
+		default:
+			continue
+		}
+		buf.Write(key)
+		buf.WriteRune(':')
+		buf.Write(value)
+		if i < len(columns)-1 {
+			buf.WriteRune(',')
+		}
+	}
+	buf.WriteRune('}')
+	return buf.String(), nil
+}
+
+func GetPrintArgs(columns []string, isIgnoreNewline bool, timeFormat string, location *time.Location, l *lgrpc.LogData) []any {
+	result := make([]any, 0)
+	for _, c := range columns {
+		switch c {
+		case "T":
+			if location == nil {
+				result = append(result, l.RegDate)
+			} else {
+				to, err := time.Parse("2006-01-02T15:04:05.000Z", l.RegDate)
+				if err != nil {
+					result = append(result, l.RegDate)
+				} else {
+					result = append(result, to.In(location).Format(timeFormat))
+				}
+			}
+		case "N":
+			if isIgnoreNewline {
+				result = append(result, strings.ReplaceAll(l.ServiceName, "\n", " "))
+			} else {
+				result = append(result, l.ServiceName)
+			}
+		case "I":
+			if isIgnoreNewline {
+				result = append(result, strings.ReplaceAll(l.ServiceId, "\n", " "))
+			} else {
+				result = append(result, l.ServiceId)
+			}
+		case "V":
+			if isIgnoreNewline {
+				result = append(result, strings.ReplaceAll(l.ServiceVersion, "\n", " "))
+			} else {
+				result = append(result, l.ServiceVersion)
+			}
+		case "L":
+			if isIgnoreNewline {
+				result = append(result, strings.ReplaceAll(l.LogLevel, "\n", " "))
+			} else {
+				result = append(result, l.LogLevel)
+			}
+		case "M":
+			if isIgnoreNewline {
+				result = append(result, strings.ReplaceAll(l.Message, "\n", " "))
+			} else {
+				result = append(result, l.Message)
+			}
+		case "C":
+			if isIgnoreNewline {
+				result = append(result, strings.ReplaceAll(l.Caller, "\n", " "))
+			} else {
+				result = append(result, l.Caller)
+			}
+		case "S":
+			if isIgnoreNewline {
+				result = append(result, strings.ReplaceAll(l.StackTrace, "\n", " "))
+			} else {
+				result = append(result, l.StackTrace)
+			}
+		}
+	}
+	return result
+}
+
+func GetLogStr(isIgnoreNewline bool, timeFormat string, location *time.Location, l *lgrpc.LogData) string {
+	result := ""
+
+	if location == nil {
+		result += l.RegDate + "\t"
+	} else {
+		to, err := time.Parse("2006-01-02T15:04:05.000Z", l.RegDate)
+		if err != nil {
+			result = result + l.RegDate + "\t"
+		} else {
+			result = result + to.In(location).Format(timeFormat)
+		}
+	}
+
+	if isIgnoreNewline {
+		result += strings.ReplaceAll(l.ServiceName, "\n", " ") + "\t"
+		result += strings.ReplaceAll(l.ServiceId, "\n", " ") + "\t"
+		result += strings.ReplaceAll(l.ServiceVersion, "\n", " ") + "\t"
+		result += strings.ReplaceAll(l.LogLevel, "\n", " ") + "\t"
+		result += strings.ReplaceAll(l.Message, "\n", " ") + "\t"
+		result += strings.ReplaceAll(l.Caller, "\n", " ") + "\t"
+		result += strings.ReplaceAll(l.StackTrace, "\n", " ") + "\t"
+	} else {
+		result += l.ServiceName + "\t"
+		result += l.ServiceId + "\t"
+		result += l.ServiceVersion + "\t"
+		result += l.LogLevel + "\t"
+		result += l.Message + "\t"
+		result += l.Caller + "\t"
+		result += l.StackTrace
+	}
+	return result
 }
 
 func ReadLog(c *cli.Context) error {
@@ -302,4 +635,32 @@ func GetLogListTail(c *cli.Context, hostStr string, envOption TogEnvironmentFile
 			return nil
 		}
 	}
+}
+
+func ParseTimeFormat(l *lgrpc.LogDataSearchCondition) string {
+	switch l.TimeFormat {
+	case "":
+		return time.RFC3339
+	case "RFC3339":
+		return time.RFC3339
+	case "RFC3339Nano":
+		return time.RFC3339Nano
+	case "RFC822":
+		return time.RFC822
+	case "RFC822Z":
+		return time.RFC822Z
+	case "RFC850":
+		return time.RFC850
+	case "RFC1123":
+		return time.RFC1123
+	case "RFC1123Z":
+		return time.RFC1123Z
+	case "ANSIC":
+		return time.ANSIC
+	case "DateTime":
+		return time.DateTime
+	case "DateOnly":
+		return time.DateOnly
+	}
+	return l.TimeFormat
 }
